@@ -2,19 +2,14 @@ from threading import Thread
 from typing import Final, List
 
 from alpaca.data.live import StockDataStream
-from ray.util.client import ray
 
 from numo.alpaca import AlpacaAuthConfig
 from numo.data import StockIntradayNumoerFeeder, StockIntradayNumoer
-
+import ray
 
 class AlpacaStreamListener(StockIntradayNumoerFeeder):
 
-    def __init__(self, tickers, auth_config: AlpacaAuthConfig, config: StockIntradayNumoer, ray_inst=None):
-        if ray_inst is None:
-            self.ray_inst = ray.init()
-        else:
-            self.ray_inst = ray_inst
+    def __init__(self, tickers, auth_config: AlpacaAuthConfig, config: StockIntradayNumoer):
         self.c = config
         self.ac = ac = auth_config
         self.asds = StockDataStream(ac.key_id, ac.secret_key, raw_data=True, )
@@ -39,7 +34,7 @@ class AlpacaStreamListener(StockIntradayNumoerFeeder):
         waits = []
         for numoer in self.numoers:
             waits.append(numoer.quit.remote())  # closeup the files and stop reacting to streamed data
-        self.ray_inst.get(waits)
+        ray.get(waits)
         self.asds.stop()
         if self.thread is not None:
             self.thread.join()

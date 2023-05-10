@@ -4,6 +4,7 @@ from typing import Final, List
 
 from numo.data.data_numoer import DataNumoerConfig
 from numo.utils import configclass, singletonremote, jsdump, now_in_nyc
+import logging
 
 
 @configclass
@@ -22,7 +23,7 @@ class StockIntradayNumoer:
     """
 
     def __init__(self, config: StockIntradayNumoerConfig,
-                 calculate_datetime=lambda *e, **ee: now_in_nyc(),
+                 calculate_datetime=(lambda *e, **ee: now_in_nyc()),
                  serializer=str):
         self.c = config
         self.log_threashold_ts = 0
@@ -32,6 +33,8 @@ class StockIntradayNumoer:
         self.file_countdown = config.file_flush_limit
         self.calculate_datum_datetime = calculate_datetime
         self.serializer = serializer
+        self.__logger = logging.getLogger(self.__class__.__name__)
+        self.__logger.info(f"intraday data numoer started for {config.ticker}")
 
     def get_log_file(self, datum, batch_date=None):
         c = self.c
@@ -55,6 +58,8 @@ class StockIntradayNumoer:
                     self.log_fh.close()
                 except Exception as e:
                     print(f"Unable to close logfile {self.log_fn} with error {e}")
+                    self.__logger.error(f"intraday data numoer started for {config.ticker}")
+            self.__logger.info(f"Opening {fn} for appending to.")
             self.log_fh = open(fn, "a")
             self.flush_count_down = c.flush_size
             self.file_countdown = c.file_flush_limit
@@ -93,7 +98,7 @@ class StockIntradayNumoerActor(StockIntradayNumoer):
 
 
 def wrap_streaming_data_numoer(data_numoer):
-    async def ret(*e, **ee):
+    def ret(*e, **ee):
         data_numoer.process_streaming_data.remote(*e, **ee)
 
     return ret

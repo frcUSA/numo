@@ -1,5 +1,1 @@
-ray[default]
-numpy
-pandas
-humanize
-alpaca-py
+requirements/requirements.txt

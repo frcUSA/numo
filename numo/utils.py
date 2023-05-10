@@ -25,6 +25,10 @@ def singletonremote(*e, **ee):
     return ray.remote(max_concurrency=1)(*e, **ee)
 
 
+def doubletonremote(*e, **ee):
+    return ray.remote(max_concurrency=2)(*e, **ee)
+
+
 def json_serial(obj):
     """JSON serializer for objects not serializable by default json code"""
 

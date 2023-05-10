@@ -1,0 +1,2 @@
+-r requiremetns.txt
+setuptools
