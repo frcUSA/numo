@@ -3,8 +3,7 @@ from datetime import datetime
 from typing import Final, List
 
 from numo.data.data_numoer import DataNumoerConfig
-from numo.utils import configclass, singletonremote, jsdump, now_in_nyc
-import logging
+from numo.utils import configclass, singletonremote, jsdump, now_in_nyc, Logs
 
 
 @configclass
@@ -17,7 +16,7 @@ class StockIntradayNumoerConfig(DataNumoerConfig):
     serializer = "alpaca_json"
 
 
-class StockIntradayNumoer:
+class StockIntradayNumoer(Logs):
     """
         This class is not thread safe.
     """
@@ -25,6 +24,7 @@ class StockIntradayNumoer:
     def __init__(self, config: StockIntradayNumoerConfig,
                  calculate_datetime=(lambda *e, **ee: now_in_nyc()),
                  serializer=str):
+        super().__init__()
         self.c = config
         self.log_threashold_ts = 0
         self.log_fn = self.log_fh = None
@@ -33,8 +33,7 @@ class StockIntradayNumoer:
         self.file_countdown = config.file_flush_limit
         self.calculate_datum_datetime = calculate_datetime
         self.serializer = serializer
-        self.__logger = logging.getLogger(self.__class__.__name__)
-        self.__logger.info(f"intraday data numoer started for {config.ticker}")
+        self.loginfo(f"intraday data numoer started for {config.ticker}")
 
     def get_log_file(self, datum, batch_date=None):
         c = self.c
@@ -58,8 +57,8 @@ class StockIntradayNumoer:
                     self.log_fh.close()
                 except Exception as e:
                     print(f"Unable to close logfile {self.log_fn} with error {e}")
-                    self.__logger.error(f"intraday data numoer started for {config.ticker}")
-            self.__logger.info(f"Opening {fn} for appending to.")
+                    self.logerr(f"intraday data numoer started for {self.c.ticker}")
+            self.loginfo(f"Opening {fn} for appending to.")
             self.log_fh = open(fn, "a")
             self.flush_count_down = c.flush_size
             self.file_countdown = c.file_flush_limit
@@ -97,6 +96,17 @@ class StockIntradayNumoerActor(StockIntradayNumoer):
         super().__init__(*e, **ee)
 
 
+class StockIntradayNumoerStoreInTime(StockIntradayNumoer):
+    def get_log_file(self, datum, batch_date=None):
+        return super().get_log_file(datum, batch_date=datetime.fromisoformat(datum['t']))
+
+
+@singletonremote
+class StockIntradayNumoerStoreInTimeActor(StockIntradayNumoerStoreInTime):
+    def __init__(self, *e, **ee):
+        super().__init__(*e, **ee)
+
+
 def wrap_streaming_data_numoer(data_numoer):
     def ret(*e, **ee):
         data_numoer.process_streaming_data.remote(*e, **ee)
@@ -104,7 +114,7 @@ def wrap_streaming_data_numoer(data_numoer):
     return ret
 
 
-class StockIntradayNumoerFeeder:
+class StockIntradayNumoerFeeder(Logs):
     numoers: Final[List[StockIntradayNumoer]] = []
 
     ## This method helps feeders of intradaynumoer to start
@@ -115,15 +125,20 @@ class StockIntradayNumoerFeeder:
                              feed_trade_numoer=None,
                              feed_quote_numoer=None):
         numoers = self.numoers
-        init_numoer_remotely = lambda c: StockIntradayNumoerActor.remote(c, serializer=jsdump)
+        init_numoer_remotely = lambda c, name: StockIntradayNumoerStoreInTimeActor.options(name=name).remote(c,
+                                                                                                            serializer=jsdump)
         for ticker in self.tickers:
             if feed_trade_numoer is not None:
-                trade_numoer = init_numoer_remotely(base_config.update(
-                    data_source=data_source, data_type='trade', ticker=ticker))
+                trade_numoer = init_numoer_remotely(
+                    base_config.update(
+                        data_source=data_source, data_type='trade', ticker=ticker),
+                    name=f"{ticker}_trades_numoer")
                 feed_trade_numoer(wrap_streaming_data_numoer(trade_numoer), ticker)
                 numoers.append(trade_numoer)
             if feed_quote_numoer is not None:
-                quote_numoer = init_numoer_remotely(base_config.update(
-                    data_source=data_source, data_type='quote', ticker=ticker))
+                quote_numoer = init_numoer_remotely(
+                    base_config.update(
+                        data_source=data_source, data_type='quote', ticker=ticker),
+                    name=f"{ticker}_quotes_numoer")
                 feed_quote_numoer(wrap_streaming_data_numoer(quote_numoer), ticker)
                 numoers.append(quote_numoer)

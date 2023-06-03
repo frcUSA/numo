@@ -10,7 +10,7 @@ from alpaca.data.historical.utils import get_data_from_response
 
 from numo.alpaca import AlpacaAuthConfig
 from numo.data.stock_intraday_numoer import StockIntradayNumoer, StockIntradayNumoerActor, StockIntradayNumoerFeeder
-from numo.utils import jsdump, doubletonremote
+from numo.utils import jsdump, doubletonremote, Logs
 
 
 def wrap_historical_data_numoer(data_numoer):
@@ -20,10 +20,10 @@ def wrap_historical_data_numoer(data_numoer):
     return ret
 
 
-class CustomizedStockHistoricalDataClient(StockHistoricalDataClient):
+class CustomizedStockHistoricalDataClient(StockHistoricalDataClient, Logs):
     def __init__(self, *e, **ee):
+        Logs.__init__(self)
         super().__init__(*e, **ee)
-        self.__logger = logging.getLogger(self.__class__.__name__)
 
     def _data_stream(
             self,
@@ -59,7 +59,7 @@ class CustomizedStockHistoricalDataClient(StockHistoricalDataClient):
         total_items = 0
         page_token = None
 
-        self.__logger.info("Beginning to stream data.")
+        self.loginfo("Beginning to stream data.")
         while True:
 
             actual_limit = None
@@ -89,10 +89,9 @@ class CustomizedStockHistoricalDataClient(StockHistoricalDataClient):
                 total_items += actual_limit
 
             page_token = response.get("next_page_token", None)
-
             if page_token is None:
                 break
-        self.__logger.info("Finished to stream data.")
+        self.loginfo("Finished to stream data.")
 
     def stream_trades(self, request_params: StockQuotesRequest):
         return self._data_stream(
@@ -111,8 +110,7 @@ class CustomizedStockHistoricalDataClient(StockHistoricalDataClient):
         )
 
 
-#@doubletonremote
-@ray.remote
+@doubletonremote
 class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
 
     def __init__(self,
@@ -121,14 +119,14 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
                  config: StockIntradayNumoer,
                  start_date: datetime = datetime.now() - timedelta(weeks=50 * 52.1429),
                  end_date: datetime = datetime.now() + timedelta(weeks=50 * 52.1429)):
+        super().__init__()
         self.c = config
         self.ac = auth_config
         self.start_date, self.end_date = start_date, end_date
         self.tickers = tickers
         self.quote_handlers = dict()
         self.trade_handlers = dict()
-        self.__logger = logging.getLogger(self.__class__.__name__)
-        self.__logger.info(f"Starting remote numoers for {self.tickers}")
+        self.loginfo(f"Starting remote numoers for {self.tickers}")
         self.start_remote_numoers(
             base_config=config,
             data_source='alpaca',
@@ -138,7 +136,7 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
         self.quit = False
 
     def run_quotes(self) -> bool:
-        self.__logger.info(f"Starting to run quotes for {self.tickers}")
+        self.loginfo(f"Starting to run quotes for {self.tickers}")
         cshdc = CustomizedStockHistoricalDataClient(self.ac.key_id, self.ac.secret_key, raw_data=True, )
         stream = cshdc.stream_quotes(StockQuotesRequest(
             feed=DataFeed.IEX,
@@ -153,11 +151,11 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
             if self.quit:
                 break
             self.quote_handlers[ticker](datum)
-        self.__logger.info(f"Finished running quotes for {self.tickers}")
+        self.loginfo(f"Finished running quotes for {self.tickers}")
         return True
 
     def run_trades(self) -> bool:
-        self.__logger.info(f"Starting to run trades for {self.tickers}")
+        self.loginfo(f"Starting to run trades for {self.tickers}")
         cshdc = CustomizedStockHistoricalDataClient(self.ac.key_id, self.ac.secret_key, raw_data=True, )
         stream = cshdc.stream_trades(StockQuotesRequest(
             feed=DataFeed.IEX,
@@ -172,15 +170,16 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
             if self.quit:
                 break
             self.trade_handlers[ticker](datum)
-        self.__logger.info(f"Ffinished running trades for {self.tickers}")
+        self.loginfo(f"Finished running trades for {self.tickers}")
         return True
 
 
-class AlpacaHistoricalRetriever:
+class AlpacaHistoricalRetriever(Logs):
     def __init__(self,
                  tickers: List[str],
                  auth_config: AlpacaAuthConfig,
                  config: StockIntradayNumoer):
+        super().__init__()
         self.c = config
         self.ac = auth_config
         self.tickers = tickers
@@ -189,8 +188,7 @@ class AlpacaHistoricalRetriever:
             auth_config=auth_config,
             config=config,
         )
-        self.__logger = logging.getLogger(self.__class__.__name__)
-        self.__logger.info(f"Beginning to stream trades and quotes for {tickers}")
+        self.loginfo(f"Beginning to stream trades and quotes for {tickers}")
         self.thread = None
 
     def run(self):
