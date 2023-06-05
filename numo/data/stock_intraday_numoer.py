@@ -1,6 +1,9 @@
 import os
+from random import random
 from datetime import datetime
-from typing import Final, List
+from typing import Final, List, Optional
+
+import msgpack
 
 from numo.data.data_numoer import DataNumoerConfig
 from numo.utils import configclass, singletonremote, jsdump, now_in_nyc, Logs
@@ -10,10 +13,11 @@ from numo.utils import configclass, singletonremote, jsdump, now_in_nyc, Logs
 class StockIntradayNumoerConfig(DataNumoerConfig):
     data_source: Final[str]
     ticker: Final[str]
-    flush_size = 1000
-    file_flush_limit = 1000
-    per_datum_datetime_extration = "now_in_nyc"
-    serializer = "alpaca_json"
+    flush_size: Final[int] = 1000
+    file_flush_limit: Final[int] = -1
+    per_datum_datetime_extration: Final[str] = "now_in_nyc"
+    serializer: Final[str] = "alpaca_json"
+    file_per_second_modulus: Final[Optional[int]] = None  # use a new file for each this number of seconds
 
 
 class StockIntradayNumoer(Logs):
@@ -26,11 +30,10 @@ class StockIntradayNumoer(Logs):
                  serializer=str):
         super().__init__()
         self.c = config
-        self.log_threashold_ts = 0
+        self.current_day = None
         self.log_fn = self.log_fh = None
         self.finished = False
         self.flush_count_down = config.flush_size
-        self.file_countdown = config.file_flush_limit
         self.calculate_datum_datetime = calculate_datetime
         self.serializer = serializer
         self.loginfo(f"intraday data numoer started for {config.ticker}")
@@ -43,13 +46,20 @@ class StockIntradayNumoer(Logs):
             now = self.calculate_datum_datetime(datum)
         ts = datetime.timestamp(now)
         if self.flush_count_down <= 0:
-            self.log_fh.flush()
+            if self.log_fh:
+                try:
+                    self.log_fh.flush()
+                except:
+                    pass
             self.flush_count_down = c.flush_size
-            self.file_countdown -= 1
-        if ts > self.log_threashold_ts or self.file_countdown <= 0:
+        nowaday = (now.year, now.month, now.day)
+        if self.current_day != nowaday:
             self.log_threashold_ts = ts + self.c.directory_file_granularity_seconds
-            fd = f"{c.directory}/{c.data_source}/{self.c.data_type}/{c.ticker}/{now.year}/{now.month}/{now.day}"
-            fn = f"{fd}/{now.hour}+{ts}"
+            fd = f"{c.directory}/{c.data_source}/{self.c.data_type}/{c.ticker}/{now.year:04d}/{now.month:02d}"
+            additional = ''
+            if c.file_per_second_modulus:
+                additional = f'.{int(ts // c.file_per_second_modulus):d}'
+            fn = f"{fd}/{now.day:02d}.{now.hour:02d}{additional}.{ts}{random() * 10}"
             os.makedirs(fd, exist_ok=True)
             self.log_fn = fn
             if self.log_fh is not None:
@@ -60,9 +70,8 @@ class StockIntradayNumoer(Logs):
                     self.logerr(f"intraday data numoer started for {self.c.ticker}")
             self.loginfo(f"Opening {fn} for appending to.")
             self.log_fh = open(fn, "a")
-            self.flush_count_down = c.flush_size
-            self.file_countdown = c.file_flush_limit
-        self.flush_count_down -= 1
+            self.flush_count_down -= 1
+            self.current_day = nowaday
 
         return self.log_fh
 
@@ -72,13 +81,19 @@ class StockIntradayNumoer(Logs):
     def process_streaming_data(self, *data, batch_date=None):
         if not self.finished:
             if batch_date is not None:
-                logfn = (lambda fh: lambda datum: fh.writelines([self.serializer(datum), "\n"]))(
-                    self.get_log_file(None, batch_date))
+                batch_fh = self.get_log_file(None, batch_date)
+                logfn = lambda datum: batch_fh.writelines([self.serializer(datum), "\n"])
             else:
                 logfn = lambda datum: self._log2fh(fh=self.get_log_file(datum, batch_date), datum=datum)
 
             for datum in data:
-                logfn(datum)
+                if isinstance(datum, list):
+                    for datum_datum in datum:
+                        logfn(datum_datum)
+                else:
+                    logfn(datum)
+
+        return True
 
     def quit(self):
         self.finished = True
@@ -98,7 +113,14 @@ class StockIntradayNumoerActor(StockIntradayNumoer):
 
 class StockIntradayNumoerStoreInTime(StockIntradayNumoer):
     def get_log_file(self, datum, batch_date=None):
-        return super().get_log_file(datum, batch_date=datetime.fromisoformat(datum['t']))
+        t = datum['t']
+        if isinstance(t, str):
+            batch_date = datetime.fromisoformat(datum['t'])
+        elif isinstance(t, msgpack.Timestamp):
+            batch_date = t.to_datetime()
+        else:
+            raise ValueError(f"ERROR: Could not parse time field {datum['t']=} from {datum}")
+        return super().get_log_file(datum, batch_date=batch_date)
 
 
 @singletonremote
@@ -108,8 +130,9 @@ class StockIntradayNumoerStoreInTimeActor(StockIntradayNumoerStoreInTime):
 
 
 def wrap_streaming_data_numoer(data_numoer):
-    def ret(*e, **ee):
-        data_numoer.process_streaming_data.remote(*e, **ee)
+    async def ret(*e, **ee):
+        r = await data_numoer.process_streaming_data.remote(*e, **ee)
+        return r
 
     return ret
 
@@ -126,7 +149,7 @@ class StockIntradayNumoerFeeder(Logs):
                              feed_quote_numoer=None):
         numoers = self.numoers
         init_numoer_remotely = lambda c, name: StockIntradayNumoerStoreInTimeActor.options(name=name).remote(c,
-                                                                                                            serializer=jsdump)
+                                                                                                             serializer=jsdump)
         for ticker in self.tickers:
             if feed_trade_numoer is not None:
                 trade_numoer = init_numoer_remotely(

@@ -1,18 +1,20 @@
 from threading import Thread
 from typing import Final, List
 
+from alpaca.data import DataFeed
 from alpaca.data.live import StockDataStream
 
 from numo.alpaca import AlpacaAuthConfig
 from numo.data import StockIntradayNumoerFeeder, StockIntradayNumoer
 import ray
 
+
 class AlpacaStreamListener(StockIntradayNumoerFeeder):
 
     def __init__(self, tickers, auth_config: AlpacaAuthConfig, config: StockIntradayNumoer):
         self.c = config
         self.ac = ac = auth_config
-        self.asds = StockDataStream(ac.key_id, ac.secret_key, raw_data=True, )
+        self.asds = StockDataStream(ac.key_id, ac.secret_key, raw_data=True, feed=DataFeed.IEX, )
         self.tickers = tickers
         self.thread = None
         self.start_remote_numoers(

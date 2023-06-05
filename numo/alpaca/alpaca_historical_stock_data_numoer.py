@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from itertools import chain
 from threading import Thread
 from typing import Final, List, Union, Optional, Generator
 import logging
@@ -21,7 +22,8 @@ def wrap_historical_data_numoer(data_numoer):
 
 
 class CustomizedStockHistoricalDataClient(StockHistoricalDataClient, Logs):
-    def __init__(self, *e, **ee):
+    def __init__(self, *e, return_lists=True, **ee):
+        self.return_lists = return_lists
         Logs.__init__(self)
         super().__init__(*e, **ee)
 
@@ -79,7 +81,7 @@ class CustomizedStockHistoricalDataClient(StockHistoricalDataClient, Logs):
             # TODO: Merge parsing if possible
 
             for symbol, data in get_data_from_response(response).items():
-                if isinstance(data, list):
+                if not self.return_lists and isinstance(data, list):
                     for datum in data:
                         yield symbol, datum
                 else:
@@ -110,7 +112,7 @@ class CustomizedStockHistoricalDataClient(StockHistoricalDataClient, Logs):
         )
 
 
-@doubletonremote
+@ray.remote(concurrency_groups={"quotes": 1, "trades": 1})
 class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
 
     def __init__(self,
@@ -126,7 +128,7 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
         self.tickers = tickers
         self.quote_handlers = dict()
         self.trade_handlers = dict()
-        self.loginfo(f"Starting remote numoers for {self.tickers}")
+        self.loginfo(f"Starting remote numoers for {self.tickers} from {start_date} to {end_date}.")
         self.start_remote_numoers(
             base_config=config,
             data_source='alpaca',
@@ -135,9 +137,11 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
         )
         self.quit = False
 
-    def run_quotes(self) -> bool:
+    @ray.method(concurrency_group="quotes")
+    async def run_quotes(self) -> bool:
         self.loginfo(f"Starting to run quotes for {self.tickers}")
-        cshdc = CustomizedStockHistoricalDataClient(self.ac.key_id, self.ac.secret_key, raw_data=True, )
+        cshdc = CustomizedStockHistoricalDataClient(self.ac.key_id, self.ac.secret_key,
+                                                    raw_data=True, return_lists=True)
         stream = cshdc.stream_quotes(StockQuotesRequest(
             feed=DataFeed.IEX,
             # These are for BaseTimeseriesDataRequest
@@ -148,13 +152,14 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
             currency=SupportedCurrencies.USD
         ))
         for ticker, datum in stream:
+            await self.quote_handlers[ticker](datum)
             if self.quit:
                 break
-            self.quote_handlers[ticker](datum)
         self.loginfo(f"Finished running quotes for {self.tickers}")
         return True
 
-    def run_trades(self) -> bool:
+    @ray.method(concurrency_group="trades")
+    async def run_trades(self) -> bool:
         self.loginfo(f"Starting to run trades for {self.tickers}")
         cshdc = CustomizedStockHistoricalDataClient(self.ac.key_id, self.ac.secret_key, raw_data=True, )
         stream = cshdc.stream_trades(StockQuotesRequest(
@@ -169,7 +174,7 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
         for ticker, datum in stream:
             if self.quit:
                 break
-            self.trade_handlers[ticker](datum)
+            await self.trade_handlers[ticker](datum)
         self.loginfo(f"Finished running trades for {self.tickers}")
         return True
 
@@ -183,17 +188,24 @@ class AlpacaHistoricalRetriever(Logs):
         self.c = config
         self.ac = auth_config
         self.tickers = tickers
-        self.actor = AlpacaHistoricalRetrievingActor.remote(
-            tickers,
+        self.actors = [AlpacaHistoricalRetrievingActor.remote(
+            [ticker, ],
             auth_config=auth_config,
             config=config,
-        )
+        ) for ticker in tickers]
         self.loginfo(f"Beginning to stream trades and quotes for {tickers}")
         self.thread = None
 
     def run(self):
-        return ray.get([self.actor.run_quotes.remote(),
-                        self.actor.run_trades.remote()])
+        return ray.get(
+            list(
+                chain(
+                    *((actor.run_quotes.remote(),
+                       actor.run_trades.remote())
+                      for actor in self.actors)
+                )
+            )
+        )
 
     def run_in_thread(self, daemon=True):
         thread = self.thread = Thread(target=self.run, daemon=daemon)

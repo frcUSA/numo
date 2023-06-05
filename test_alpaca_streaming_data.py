@@ -9,7 +9,7 @@ run_forever = True
 if __name__ == '__main__':
     ray.init()
     adc = AlpacaStreamListener(
-        # tickers=['SQ', 'AAPL', 'SPY', 'TSLA', 'ABBV', 'GOOG', 'AMZN', 'MSFT', 'FB', 'BABA', 'BAC', 'JPM', 'WFC', 'C'],
+        tickers=['SQ', 'AAPL', 'SPY', 'TSLA', 'ABBV', 'GOOG', 'AMZN', 'MSFT', 'FB', 'BABA', 'BAC', 'JPM', 'WFC', 'C'],
         auth_config=AlpacaAuthConfig(
             key_id="AK8EBC4D9NDD10MG0YWL",
             secret_key="kmAdiUZoqO2lSUm7UJZpY0PssIk5ag8dcFPz7Lpf",
@@ -18,7 +18,8 @@ if __name__ == '__main__':
             ticker="NADA",
             directory="/tmp/test_alpaca_streaming_data_logging",
             data_type="UNKNOWN",
-            data_source="alpaca"
+            data_source="alpaca",
+            file_per_second_modulus=5 * 60,  # every five minutes is a new file
         ),
     )
     print("Starting the run now")

@@ -1,2 +1,2 @@
--r requiremetns.txt
+-r requirements.txt
 setuptools
