@@ -1,12 +1,11 @@
 from threading import Thread
-from typing import Final, List
 
+import ray
 from alpaca.data import DataFeed
 from alpaca.data.live import StockDataStream
 
 from numo.alpaca import AlpacaAuthConfig
 from numo.data import StockIntradayNumoerFeeder, StockIntradayNumoer
-import ray
 
 
 class AlpacaStreamListener(StockIntradayNumoerFeeder):

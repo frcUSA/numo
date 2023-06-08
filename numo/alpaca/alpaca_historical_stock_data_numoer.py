@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta
 from itertools import chain
 from threading import Thread
-from typing import Final, List, Union, Optional, Generator
-import logging
+from typing import List, Optional, Generator
+
 import ray
 from alpaca.common import SupportedCurrencies, DATA_V2_MAX_LIMIT, RawData
 from alpaca.data import StockQuotesRequest, DataFeed
@@ -10,8 +10,8 @@ from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.historical.utils import get_data_from_response
 
 from numo.alpaca import AlpacaAuthConfig
-from numo.data.stock_intraday_numoer import StockIntradayNumoer, StockIntradayNumoerActor, StockIntradayNumoerFeeder
-from numo.utils import jsdump, doubletonremote, Logs
+from numo.data.stock_intraday_numoer import StockIntradayNumoer, StockIntradayNumoerFeeder
+from numo.utils import Logs
 
 
 def wrap_historical_data_numoer(data_numoer):
@@ -122,7 +122,7 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
                  start_date: datetime = datetime.now() - timedelta(weeks=50 * 52.1429),
                  end_date: datetime = datetime.now() + timedelta(weeks=50 * 52.1429)):
         super().__init__()
-        self.c = config
+        self.c = c = config
         self.ac = auth_config
         self.start_date, self.end_date = start_date, end_date
         self.tickers = tickers
@@ -131,7 +131,7 @@ class AlpacaHistoricalRetrievingActor(StockIntradayNumoerFeeder):
         self.loginfo(f"Starting remote numoers for {self.tickers} from {start_date} to {end_date}.")
         self.start_remote_numoers(
             base_config=config,
-            data_source='alpaca',
+            data_source=c.data_source or 'alpaca',
             feed_trade_numoer=lambda numoer_call, ticker: self.trade_handlers.__setitem__(ticker, numoer_call),
             feed_quote_numoer=lambda numoer_call, ticker: self.quote_handlers.__setitem__(ticker, numoer_call),
         )

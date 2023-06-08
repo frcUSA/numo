@@ -1,12 +1,13 @@
 import os
-from random import random
 from datetime import datetime
+from random import random
 from typing import Final, List, Optional
 
 import msgpack
 
 from numo.data.data_numoer import DataNumoerConfig
-from numo.utils import configclass, singletonremote, jsdump, now_in_nyc, Logs
+from numo.io import FileWriter, ParquetFileWriter, IO_REGISTRY_SOURCE_DATA_FORMAT, JsonlFileWriter
+from numo.utils import configclass, singletonremote, now_in_nyc, Logs, jsdump
 
 
 @configclass
@@ -18,6 +19,7 @@ class StockIntradayNumoerConfig(DataNumoerConfig):
     per_datum_datetime_extration: Final[str] = "now_in_nyc"
     serializer: Final[str] = "alpaca_json"
     file_per_second_modulus: Final[Optional[int]] = None  # use a new file for each this number of seconds
+    file_format: Final[str] = 'parquet'  # or 'jsonl'
 
 
 class StockIntradayNumoer(Logs):
@@ -37,8 +39,16 @@ class StockIntradayNumoer(Logs):
         self.calculate_datum_datetime = calculate_datetime
         self.serializer = serializer
         self.loginfo(f"intraday data numoer started for {config.ticker}")
+        match config.file_format:
+            case 'parquet':
+                pass
+                self.initialize_file_writer = ParquetFileWriter
+            case 'jsonl':
+                self.initialize_file_writer = JsonlFileWriter
+            case _:
+                raise ValueError(f"Cannot write to {config.fileformat} formatted file.")
 
-    def get_log_file(self, datum, batch_date=None):
+    def get_log_file(self, datum, batch_date=None) -> FileWriter:
         c = self.c
         if batch_date is not None:
             now = batch_date
@@ -53,46 +63,40 @@ class StockIntradayNumoer(Logs):
                     pass
             self.flush_count_down = c.flush_size
         nowaday = (now.year, now.month, now.day)
-        if self.current_day != nowaday:
+        if not self.log_fh or self.current_day != nowaday:
             self.log_threashold_ts = ts + self.c.directory_file_granularity_seconds
-            fd = f"{c.directory}/{c.data_source}/{self.c.data_type}/{c.ticker}/{now.year:04d}/{now.month:02d}"
+            fd = f"{c.directory}/{c.data_source}/{c.file_format}/{self.c.data_type}/{c.ticker}/{now.year:04d}/{now.month:02d}"
             additional = ''
             if c.file_per_second_modulus:
                 additional = f'.{int(ts // c.file_per_second_modulus):d}'
             fn = f"{fd}/{now.day:02d}.{now.hour:02d}{additional}.{ts}{random() * 10}"
             os.makedirs(fd, exist_ok=True)
             self.log_fn = fn
-            if self.log_fh is not None:
+            if self.log_fh:
                 try:
                     self.log_fh.close()
                 except Exception as e:
                     print(f"Unable to close logfile {self.log_fn} with error {e}")
                     self.logerr(f"intraday data numoer started for {self.c.ticker}")
             self.loginfo(f"Opening {fn} for appending to.")
-            self.log_fh = open(fn, "a")
+            self.log_fh = IO_REGISTRY_SOURCE_DATA_FORMAT[c.data_source][c.data_type][c.file_format](fn)
             self.flush_count_down -= 1
             self.current_day = nowaday
 
         return self.log_fh
 
-    def _log2fh(self, fh, datum):
-        return fh.writelines([self.serializer(datum), "\n"])
-
     def process_streaming_data(self, *data, batch_date=None):
         if not self.finished:
             if batch_date is not None:
-                batch_fh = self.get_log_file(None, batch_date)
-                logfn = lambda datum: batch_fh.writelines([self.serializer(datum), "\n"])
+                batch_fh: FileWriter = self.get_log_file(None, batch_date)
+                batch_fh.add_data(data)
             else:
-                logfn = lambda datum: self._log2fh(fh=self.get_log_file(datum, batch_date), datum=datum)
-
-            for datum in data:
-                if isinstance(datum, list):
-                    for datum_datum in datum:
-                        logfn(datum_datum)
-                else:
-                    logfn(datum)
-
+                for datum in data:
+                    if isinstance(datum, list):
+                        for ddatum in datum:
+                            self.get_log_file(ddatum, batch_date).add_datum(ddatum)
+                    else:
+                        self.get_log_file(datum, batch_date).add_datum(ddatum)
         return True
 
     def quit(self):
@@ -148,8 +152,8 @@ class StockIntradayNumoerFeeder(Logs):
                              feed_trade_numoer=None,
                              feed_quote_numoer=None):
         numoers = self.numoers
-        init_numoer_remotely = lambda c, name: StockIntradayNumoerStoreInTimeActor.options(name=name).remote(c,
-                                                                                                             serializer=jsdump)
+        init_numoer_remotely = lambda c, name: (StockIntradayNumoerStoreInTimeActor.options(
+            name=f"{name}#{c.data_source}#{c.data_type}#{c.file_format}").remote(c, serializer=jsdump))
         for ticker in self.tickers:
             if feed_trade_numoer is not None:
                 trade_numoer = init_numoer_remotely(

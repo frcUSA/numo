@@ -6,7 +6,7 @@ from datetime import datetime, date
 
 import msgpack
 import ray
-from pytz import timezone, tzinfo
+from pytz import timezone
 
 
 def configclass(cls):
@@ -37,7 +37,7 @@ def json_serial(obj):
     if isinstance(obj, msgpack.ext.Timestamp):
         return datetime.timestamp(obj.to_datetime())
     elif isinstance(obj, (datetime, date)):
-        return obj.isoformat()
+        return obj.timestamp()
     raise TypeError("Type %s not serializable" % type(obj))
 
 
@@ -45,7 +45,8 @@ def jsdump(item):
     return json.dumps(item, default=json_serial)
 
 
-NYCTZ = timezone('US/Eastern')
+NYCTZ_NAME = 'US/Eastern'
+NYCTZ = timezone(NYCTZ_NAME)
 
 
 def now_in_nyc(indt=None):

@@ -3,3 +3,4 @@ numpy
 pandas
 humanize
 alpaca-py
+pyarrow

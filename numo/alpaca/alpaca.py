@@ -8,4 +8,3 @@ class AlpacaAuthConfig(BaseConfigClass):
     key_id: Final[str] = None
     secret_key: Final[str] = None
     paper_trading: Final[bool] = False
-
